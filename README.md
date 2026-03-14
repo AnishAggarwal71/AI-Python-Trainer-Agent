@@ -1,385 +1,301 @@
-```markdown
-# Personal AI Learning Agent (CLI)
+# Personal AI Learning Agent — Architecture Notes
 
-A minimal AI-powered learning agent built to understand how modern **LLM applications are architected and orchestrated**.
+> A CLI-based AI tutor I built to understand how LLM applications are actually structured — not just how to call an API.
 
-This project is intentionally simple and built as a **learning exercise**, not a production-ready product. The goal was to understand how to design AI systems where deterministic program logic works together with a language model.
-
-The agent runs locally using **Ollama** and a small open model.
+This is a learning project, not a production tool. The goal was to go from *"I can prompt a model"* to *"I understand how real AI systems are designed"*. Everything here is intentionally minimal so the architecture stays visible.
 
 ---
 
-# What This Project Does
+## What It Does
 
-The program acts as a simple **AI tutor in the terminal**.
+The agent acts as a terminal-based Python tutor. Given a predefined skill graph, it:
 
-Workflow:
-
-1. Determine the next skill from a predefined skill graph
-2. Explain the concept using an LLM
-3. Generate a practice exercise
-4. Accept the learner’s answer
-5. Evaluate the response
-6. Mark the skill as completed
-
-Example flow:
+1. Determines the next concept to teach (deterministically)
+2. Generates an explanation via LLM
+3. Creates a practice exercise
+4. Accepts and evaluates the learner's answer
+5. Marks the skill complete and moves forward
 
 ```
+$ python main.py
 
-Next Skill: Python Variables
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Next Skill: Python Variables
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Explanation:
-...
+  Variables in Python are labels that point to values in memory...
 
 Exercise:
-...
+  Create a variable called `name` and assign it your name as a string.
 
-Your answer: x = 10
+Your answer: name = "Alice"
 
 Evaluation:
-Score: 3/5
-
+  ✓ Correct. Score: 4/5 — Consider also noting the type.
 ```
+
+**Stack:** Python · Ollama · qwen2.5:3b (local)
 
 ---
 
-# Project Architecture
-
-The system was intentionally separated into layers to mirror how real AI products are structured.
+## Project Structure
 
 ```
-
-learning-agent
-
-skills.py   → Knowledge Layer
-prompts.py  → Prompt Layer
-llm.py      → Model Interface Layer
-agent.py    → Agent / Orchestration Layer
-main.py     → Interface Layer (CLI)
-
+learning-agent/
+├── skills.py       # Knowledge Layer   — what to teach and in what order
+├── prompts.py      # Prompt Layer      — how to instruct the model
+├── llm.py          # Model Interface   — abstracts the model provider
+├── agent.py        # Agent Layer       — orchestrates the full loop
+└── main.py         # Interface Layer   — CLI entry point
 ```
+
+Each layer has a single responsibility. This separation isn't just clean code — it mirrors how real AI products are architected.
 
 ---
 
-# Layer Breakdown
+## Architecture Deep Dive
 
-## Knowledge Layer
-
-`skills.py`
-
-Defines the **skill graph and dependencies**.
-
-Example:
+### How the layers connect
 
 ```
+main.py
+  └─▶ agent.py          ← the brain; coordinates everything
+        ├─▶ skills.py   ← what skill comes next?
+        ├─▶ prompts.py  ← build the right prompt for the task
+        └─▶ llm.py      ← send it to the model, get a response
+```
 
+The agent never talks to the model directly. It builds intent (`skill + prompt`), hands it to the LLM interface, and acts on what comes back. This separation is what makes the system swappable and testable.
+
+---
+
+### Layer 1 — Knowledge Layer (`skills.py`)
+
+Defines the skill graph and dependency order:
+
+```
 python_variables
-↓
+      ↓
 python_loops
-↓
+      ↓
+python_functions
+      ↓
 python_dicts
-
 ```
 
-The curriculum is deterministic so the LLM cannot hallucinate learning paths.
+This is entirely deterministic. The LLM has no say in what gets taught next — it can only explain and evaluate. This was a key early insight: **you don't want the model deciding curriculum**. It will hallucinate a perfectly reasonable-sounding learning path that has no coherent structure.
+
+**Lesson:** Constrain the model to the decisions it's actually good at. Hand off structure to deterministic logic.
 
 ---
 
-## Prompt Layer
+### Layer 2 — Prompt Layer (`prompts.py`)
 
-`prompts.py`
+Stores reusable, parameterized prompt templates. For example:
 
-Stores reusable prompt templates that instruct the LLM to:
+- `explanation_prompt(skill)` → asks the model to teach a concept
+- `exercise_prompt(skill)` → asks for a coding challenge
+- `evaluation_prompt(skill, answer)` → asks for structured feedback
 
-- explain concepts
-- generate exercises
-- evaluate answers
+Separating prompts from agent logic was one of the most important structural decisions. When prompts are embedded inline, iteration is messy — you end up touching orchestration logic just to tweak wording. When they're a layer of their own, prompt engineering becomes its own discipline.
 
-Separating prompts from logic makes the system easier to iterate on.
-
----
-
-## Model Interface Layer
-
-`llm.py`
-
-Handles interaction with the language model.
-
-Currently uses:
-
-```
-
-Ollama + qwen2.5:3b
-
-```
-
-Because the model is abstracted behind an interface, the system could easily switch to:
-
-- OpenAI
-- Anthropic
-- Groq
-- different local models
-
-without changing the rest of the code.
+**Lesson:** Prompt files are config, not code. Treat them that way.
 
 ---
 
-## Agent Layer
+### Layer 3 — Model Interface (`llm.py`)
 
-`agent.py`
+A thin wrapper around Ollama (currently `qwen2.5:3b`). The rest of the system only ever calls `llm.complete(prompt)`. It doesn't know or care what's underneath.
 
-The **core orchestrator** of the system.
+The value of this abstraction became obvious immediately. Switching from Ollama to OpenAI or Anthropic would require changing exactly one file. Everything else stays the same.
+
+```python
+# What the agent sees:
+response = llm.complete(prompt)
+
+# What could be underneath:
+# - Ollama (local)
+# - OpenAI API
+# - Anthropic API
+# - Groq
+# - Any future provider
+```
+
+**Lesson:** Model abstraction isn't premature optimization — it's just good design. The model is a dependency, not a core.
+
+---
+
+### Layer 4 — Agent Layer (`agent.py`)
+
+The orchestrator. This is where the "agentic" behavior lives.
 
 Responsibilities:
+- Read current learning state
+- Decide the next skill
+- Build the right prompt for each stage (explain → exercise → evaluate)
+- Call the LLM
+- Parse and act on the response
+- Update progress state
 
-- determine the next skill
-- generate explanations
-- generate exercises
-- evaluate answers
-- update learning progress
-
-The agent coordinates:
-
-```
-
-skills → prompts → LLM
+The agent implements a fixed loop, not open-ended autonomy. It's *agentic* in the sense that it sequences multi-step behavior, not in the sense that it autonomously plans. That distinction matters a lot in practice.
 
 ```
+┌─────────────────────────────────────────────┐
+│                 Agent Loop                  │
+│                                             │
+│  load_state → next_skill → explain          │
+│       ↑                        ↓            │
+│  save_state ← evaluate ← exercise           │
+└─────────────────────────────────────────────┘
+```
+
+**Lesson:** Most "agents" in production are really just well-structured loops with an LLM in the middle. The architecture matters more than the model.
 
 ---
 
-## Interface Layer
+### Layer 5 — Interface Layer (`main.py`)
 
-`main.py`
+A minimal CLI that drives the agent loop. Keeps I/O completely separate from logic — `agent.py` never prints anything directly.
 
-Provides a simple **CLI interface** that runs the learning loop.
-
-```
-
-python main.py
-
-```
+**Lesson:** Separating interface from logic means you can later add a web UI (Streamlit, FastAPI) without touching the agent.
 
 ---
 
-# Key Concepts Learned
+## Core Architectural Concepts Learned
 
-This project focused on understanding **how LLM applications are structured**, not just how to call an API.
+### 1. LLM Apps Are Systems, Not Models
 
-### 1. LLM Applications Are Systems
-
-A real AI tool consists of multiple layers:
+Before building this, I thought "building with AI" mostly meant crafting good prompts. It doesn't. The model is one component in a larger system:
 
 ```
-
-Knowledge layer
-Prompt layer
-Model interface
-Agent orchestration
-User interface
-
+Knowledge layer       — what the system knows
+Prompt layer          — how it communicates with the model
+Model interface       — which model, abstracted away
+Orchestration layer   — the control flow and state machine
+Interface layer       — how humans interact with it
 ```
 
-The model itself is only one component.
+The model does the probabilistic heavy lifting. Everything else is deterministic system design.
 
 ---
 
-### 2. Deterministic Logic + Probabilistic Reasoning
+### 2. Deterministic vs. Probabilistic Separation
 
-The system separates:
+One of the clearest design principles in this project:
 
-Deterministic logic:
+| Deterministic (code owns this) | Probabilistic (model owns this) |
+|---|---|
+| Skill ordering | Explanations |
+| Progress tracking | Exercise generation |
+| Loop control | Answer evaluation |
+| State management | Feedback wording |
 
-- skill dependencies
-- curriculum flow
-- progress tracking
-
-Probabilistic reasoning:
-
-- explanations
-- exercise generation
-- answer evaluation
-
-This separation makes the system more reliable.
+Mixing these up makes systems fragile. If you let the model decide what skill comes next, you get non-deterministic curricula. If you hard-code evaluation logic, you lose flexibility. The boundary matters.
 
 ---
 
-### 3. Prompt Engineering is Constraint Engineering
+### 3. Prompt Engineering Is Constraint Engineering
 
-Small models behave much better when prompts:
+Working with a small local model (`qwen2.5:3b`) made this painfully obvious. The model will do almost anything if you ask vaguely. The job of a prompt is to constrain the space of valid responses.
 
-- clearly define output structure
-- explicitly state constraints
-- enforce formats (JSON, sections, etc.)
+Things that actually helped:
+- Explicitly define the output format (JSON, numbered sections, etc.)
+- State what the model should *not* do, not just what it should
+- Give an example of ideal output
+- Keep prompts single-purpose — one prompt, one task
 
----
-
-### 4. Model Abstraction is Important
-
-The architecture was designed so the model provider can be swapped easily:
-
-```
-
-agent → LLMClient → model provider
-
-```
-
-Only `llm.py` would need to change to switch from Ollama to OpenAI or another provider.
+Small models especially need structural scaffolding. But this discipline pays off on large models too.
 
 ---
 
-### 5. AI Products Are Mostly System Design
+### 4. Agents Are Mostly Architecture
 
-The majority of work in LLM products is not the model itself but:
+The word "agent" suggests autonomous reasoning. In practice, building this made it clear that:
 
-- architecture
-- control logic
-- prompt structure
-- state management
-- user interaction
+- The *agent loop* is a design pattern, not a model feature
+- An agent is a program that sequences model calls with state and control logic between them
+- Reliability comes from the structure around the model, not from the model itself
+- "Agentic" behavior = deterministic orchestration + selective LLM delegation
+
+This is the most important thing I took away from the project.
 
 ---
 
-# Limitations of This Prototype
+### 5. State Management Is the Hard Part
 
-This project intentionally kept the system minimal.
+The agent needs to remember:
+- What skills have been completed
+- What skill is currently active
+- What stage of the loop it's in (explain / exercise / evaluate)
+
+In this prototype, state lives in memory and resets on restart. In any real system, state persistence is a first-class concern — and the shape of that state ends up defining the agent's capabilities more than any other design decision.
+
+---
+
+## Known Limitations (and What They Teach)
 
 ### No Persistent Memory
-
-Progress resets when the program restarts.
-
-A better system would store progress in:
-
-```
-
-user_progress.json
-
-```
-
-or a database.
-
----
+Progress resets on restart. A real system would persist to `user_progress.json` or a database. This is easy to add but was left out to keep the prototype focused.
 
 ### Weak Exercise Reliability
+Small models sometimes ignore constraints, produce incomplete exercises, or format inconsistently. This is a prompt engineering problem, not a model capability problem. Structured output (forcing JSON responses with a schema) would fix most of it.
 
-Small models sometimes:
+### No Guided Practice Scaffold
+The system goes straight from explanation to independent exercise. Better learning systems use:
+```
+Explanation → Worked Example → Guided Practice → Independent Exercise → Evaluation
+```
+Each stage is a separate agent step with a separate prompt.
 
-- generate incomplete exercises
-- ignore constraints
-- produce inconsistent formatting
+### LLM-Only Evaluation
+Currently the agent trusts the model entirely to evaluate answers. More robust systems layer:
+- Rule-based checks (does the code run? does it produce the right output?)
+- Unit tests
+- LLM evaluation for semantic correctness
 
-This can be improved with:
-
-- stronger prompts
-- structured outputs
-- larger models
+### No Branching or Skill Selection
+The curriculum is linear. Future versions could expose skill selection to the learner or adapt difficulty based on evaluation scores.
 
 ---
 
-### No Guided Practice
+## Future Directions
 
-The system jumps directly from explanation to exercise.
+Things I'd explore in a next iteration:
 
-Better learning systems include:
-
-```
-
-Explanation
-Worked Example
-Guided Practice
-Independent Exercise
-Evaluation
-
-```
+- **Persistent state** — JSON or SQLite progress tracking
+- **Structured outputs** — force JSON from the LLM for reliable parsing
+- **Mastery scoring** — track score history per skill, require mastery before advancing
+- **Worked examples** — add a stage between explanation and exercise
+- **Vector memory** — store past answers and reference them in future prompts (RAG-lite)
+- **Web interface** — Streamlit frontend over the same agent layer, no logic changes needed
+- **Multi-model routing** — use a fast/small model for exercises, larger model for evaluation
+- **Tool use** — let the agent run the learner's code and use the output as evaluation context
 
 ---
 
-### No Skill Selection
+## How to Run
 
-The system automatically selects the next skill.
-
-Future versions could allow the learner to choose:
-
-```
-
-1. Python Loops
-2. Python Functions
-3. Python Lists
-
-```
-
----
-
-### Weak Evaluation Logic
-
-Currently the agent relies entirely on the LLM to judge answers.
-
-More robust systems combine:
-
-- rule-based checks
-- unit tests
-- LLM evaluation
-
----
-
-# Future Improvements
-
-Possible upgrades:
-
-- persistent user progress tracking
-- skill mastery scoring
-- worked examples before exercises
-- vector memory for storing learning history
-- web interface (Streamlit / FastAPI)
-- retrieval-augmented explanations (RAG)
-
----
-
-# How to Run
-
-Install dependencies:
-
-```
-
+```bash
+# Install dependencies
 pip install -r requirements.txt
 
-```
+# Install Ollama
+# https://ollama.com
 
-Install Ollama:
+# Pull the model
+ollama pull qwen2.5:3b
 
-```
-
-https://ollama.com
-
-```
-
-Download the model:
-
-```
-
-ollama run qwen2.5:3b
-
-```
-
-Start the learning agent:
-
-```
-
+# Run the agent
 python main.py
-
 ```
 
 ---
 
-# Purpose of This Project
+## Why I Built This
 
-This repository is meant to serve as **a reference project for understanding how AI systems are structured**.
+I wanted to understand how the pieces of an LLM application actually fit together — not from documentation, but by building something that breaks in interesting ways when the design is wrong.
 
-The focus was on learning:
+The main thing I'd tell someone starting a similar project: **resist the urge to make the model do everything**. The more you offload to the model, the less predictable your system becomes. The best AI systems are the ones where the model is doing exactly what it's uniquely good at, surrounded by tight deterministic structure that makes the overall behavior reliable.
 
-- AI application architecture
-- agent orchestration
-- prompt design
-- model abstraction
-- system thinking for LLM products
-```
+The model is powerful. The architecture is what makes it useful.
