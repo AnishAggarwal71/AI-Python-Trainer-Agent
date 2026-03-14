@@ -1,0 +1,4 @@
+ollama
+python-dotenv
+typing-extensions
+json
